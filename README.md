@@ -1,38 +1,48 @@
 # <img src="images/icon.jpg" alt="Icon" width="60" height="60" /> HySort: Hydrogenase subtype classifier
 
-HySort is used to identify the potential hydrogenases in a genome followed by subtype classification. It's built upon hidden markov model search for potential hydrogenases and probability calculation based on Gaussian mixture models with the new embeddings from constrative learning of the protein language model ESM-C.
+HySort is a computational tool for identifying potential hydrogenases in genomic data and classifying their subtypes. It combines: Hidden Markov Model (HMM) search for hydrogenase candidates and Gaussian Mixture Models (GMMs) with updated protein embeddings from contrastive learning of embeddings from the protein language model ESM-C for subtype classification. 
 
 # Installation
-## Requirements before installation
-Python3 is required for the installation. Becasue `hmmscan` and `seqkit` are called by HySort, please make sure to have them installed beforehand and make them accessible system-wide.
+## Prerequisites
+1. Python 3.8+
+2. System-wide accessible dependencies:
+	`hmmscan`
+	`seqkit`
+Add the tools to your system path (replace /path/to/software with their install directories):
+```
+export PATH="$PATH:/path/to/software"
+```
 
-## Install HySort with `pip`
-Installation of HySort is straightforward and trivial.
-Step1: clone the github repo:
+## Step-by-Step Installation
+1. Clone the repository:
 ```
-git clone
-cd
+git clone https://github.com/Microme-pz/HySort.git
+cd HySort
 ```
-Step2: create a new python environment for installation of required packages:
+2. Create and activate a Python environment (recommended):
 ```
-pip -n
+python -m venv hysort_env
+source hysort_env/bin/activate
+```
+3. Install dependencies:
+```
 pip install -r requirements.txt
 ```
 
 # Usage
-You can check the help page with:
+##Basic Commands:
 ```
+# Show help menu
 ./hysort -h
-```
-HySort accepts the input as a single protein file, (e.g. coding sequences from a genome) or a folder containing multiple protein files:
-```
-# single file
+
+# Analyze a single protein file
 ./hysort --input_file tests/test.fa
-# multiple files
-./hysort --protein_dir tests --file_extension fa
+
+# Process multiple files in a directory
+./hysort --protein_dir tests --file_extension .fa
 ```
-You can also use GPU for accelaration:
+##GPU Acceleration
 ```
-./hysort --input_file tests/test.fa --device cuda
-./hysort --input_file tests/test.fa --device cuda:0
+./hysort --input_file tests/test.fa --device cuda      # Default GPU
+./hysort --input_file tests/test.fa --device cuda:0    # Specific GPU
 ```
