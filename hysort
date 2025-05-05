@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+import os
+import sys
+import argparse
+import pickle
+import subprocess
+from pathlib import Path
+
+# ======================== LIGHTWEIGHT SECTION ========================
+# (Runs first for fast help/version response)
+
+def create_parser():
+    """Create argument parser with preserved formatting"""
+    class PreservedNewlinesFormatter(argparse.RawDescriptionHelpFormatter):
+        def _format_text(self, text): return text
+
+    parser = argparse.ArgumentParser(
+        description="""\
+=========================================================
+=========HySort: Hydrogenase Classification Tool=========
+=========================================================
+                """,
+        formatter_class=PreservedNewlinesFormatter,
+        epilog="""\
+Example usage:
+  python hysort.py --protein_dir /data/proteins --file_extension faa
+  python hysort.py --input_file protein.faa --device cuda
+
+For more information:
+  python hysort.py --help
+""",
+        usage=argparse.SUPPRESS
+    )
+
+    # Runtime parameters
+    parser.add_argument('--device', type=str, default='cpu', help='Device to use (cpu/cuda/cuda:[INT]), default: cpu')
+    parser.add_argument('--cpu_cores', type=str, default='1', help='CPU cores for hmmscan, default: 1')
+    parser.add_argument('--pval_threshold', type=float, default=0.3, help='Only show the hits above the probability threshold, default: 0.3')
+    parser.add_argument('--tmp_dir', type=str, default='hysort_tmp', help='Temporary directory, default: ./hysort_tmp')
+    parser.add_argument('--output', type=str, default='hysort_result.tsv', help='Output file path, default: ./hysort_result.tsv')
+    parser.add_argument('--version', type=str, help='Print version info')
+
+    # Input options
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('--input_file', type=str, help='Single protein file')
+    input_group.add_argument('--protein_dir', type=str, help='Directory of protein files')
+    parser.add_argument('--file_extension', type=str, default='faa', help='File extension when using directory')
+
+    return parser
+
+def parse_minimal_args():
+    """Lightweight pre-parser for fast help/version"""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('-h', '--help', action='store_true')
+    parser.add_argument('-v', '--version', action='store_true')
+    return parser.parse_known_args()[0]
+
+def show_help_and_exit():
+    """Show help and exit without loading heavy imports"""
+    create_parser().print_help()
+    sys.exit(0)
+
+def show_version_and_exit():
+    """Show version and exit"""
+    print("HySort 1.0.0")
+    sys.exit(0)
+
+# ======================== MAIN FUNCTION ========================
+
+def main():
+    # STAGE 1: Fast help/version check
+    args = parse_minimal_args()
+    if args.help: show_help_and_exit()
+    if args.version: show_version_and_exit()
+
+    # STAGE 2: Import heavy dependencies only when needed
+    import numpy as np
+    import pandas as pd
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from Bio import SeqIO
+    from Bio.Seq import Seq
+    from esm.models.esmc import ESMC
+    from esm.sdk.api import ESMProtein, LogitsConfig
+    from scipy.special import logsumexp
+    from tqdm import tqdm
+
+    # ======================== CLASS DEFINITIONS ========================
+   
+    base_dir = Path(__file__).parent.absolute()
+
+    class Config:
+        def __init__(self):
+            self.DEVICE = 'cpu'
+            self.CPU_CORES = '1'
+            self.PVAL_THRESHOLD = 0.3
+            self.TMP_DIR_NAME = 'hysort_tmp'
+            self.OUTPUT_FILENAME = 'hysort_result.tsv'
+            self.INPUT_FILE = None
+            self.PROTEIN_DIR = None
+            self.FILE_EXTENSION = "*.faa"
+            self.SIMCLR_MODEL_PATH = f"{base_dir}/models/simclr_weights.pth"
+            self.GMM_MODEL_PATH = f"{base_dir}/models/gmm_nested_models.pkl"
+            self.HMM_SCORE_PATH = f"{base_dir}/models/hmm_score_threshold.txt"
+            self.HMM_DB_PATH = f"{base_dir}/models/combined.hmm"
+
+    class MissingInputError(Exception):
+        """Raised when neither input_file nor protein_dir is specified"""
+        pass
+
+    class SimCLR(nn.Module):
+        """SimCLR model for protein sequence representation"""
+        def __init__(self, input_size, hidden_size, num_layers=3):
+            super().__init__()
+            self.fc1 = nn.Linear(input_size, hidden_size)
+            layers = []
+            for _ in range(num_layers - 1):
+                layers.append(nn.Linear(hidden_size, hidden_size))
+                layers.append(nn.ReLU())
+            self.layers = nn.ModuleList(layers)
+            self.fc_out = nn.Linear(hidden_size, 256)
+        
+        def forward(self, x):
+            x = torch.relu(self.fc1(x))
+            for layer in self.layers:
+                x = layer(x) + x  # Residual connection
+            return F.normalize(self.fc_out(x), dim=1)
+
+    # ======================== UTILITY FUNCTIONS ========================
+
+    def setup_working_directory(tmp_dir=None):
+        """Create temporary directory"""
+        if not tmp_dir:
+            tmp_dir = os.path.join(os.getcwd(), 'hysort_tmp')
+        os.makedirs(tmp_dir, exist_ok=True)
+        return tmp_dir
+
+    def get_input_files(input_file=None, protein_dir=None, extension="*.faa"):
+        """Get list of input files"""
+        if input_file:
+            return [input_file]
+        elif protein_dir:
+            return [str(p) for p in Path(protein_dir).glob(extension)]
+        raise MissingInputError("Specify either --input_file or --protein_dir")
+
+    def load_hmm_thresholds(filepath):
+        """Load HMM score thresholds"""
+        with open(filepath) as f:
+            return {p[0]: float(p[2]) for p in [line.strip().split('\t') for line in f.readlines()[1:]]}
+
+    def embed_sequence(client, sequence):
+        """Generate ESM embeddings"""
+        protein = ESMProtein(sequence=sequence)
+        protein_tensor = client.encode(protein)
+        return torch.mean(client(protein_tensor.sequence.unsqueeze(0)).embeddings, dim=1)
+
+    def predict_class(classes, embeddings, class_gmms):
+        """Predict protein class"""
+        probs = np.zeros((len(classes), embeddings.shape[0]))
+        for cv in class_gmms.keys():
+            scores = np.array([gmm.score_samples(embeddings) 
+                  for label, gmm in class_gmms[cv].items()])
+            probs += np.exp(scores - logsumexp(scores, axis=0, keepdims=True))
+        return probs/len(class_gmms)
+
+    # ======================== MAIN EXECUTION ========================
+
+    try:
+        # Parse full arguments
+        args = create_parser().parse_args()
+        
+        # Initialize configuration
+        config = Config()
+        config.DEVICE = args.device
+        config.CPU_CORES = args.cpu_cores
+        config.PVAL_THRESHOLD = args.pval_threshold
+        config.TMP_DIR_NAME = args.tmp_dir
+        config.OUTPUT_FILENAME = args.output
+        config.INPUT_FILE = args.input_file
+        config.PROTEIN_DIR = args.protein_dir
+        config.FILE_EXTENSION = f"*.{args.file_extension.lstrip('.')}"
+
+        # Setup environment
+        tmp_dir = setup_working_directory(config.TMP_DIR_NAME)
+        input_files = get_input_files(config.INPUT_FILE, config.PROTEIN_DIR, config.FILE_EXTENSION)
+
+        # Load models
+        client = ESMC.from_pretrained("esmc_300m").to(config.DEVICE)
+        
+        simclr = SimCLR(960, 128).to(config.DEVICE)
+        simclr.load_state_dict(torch.load(config.SIMCLR_MODEL_PATH))
+        if config.DEVICE == 'cpu':
+            simclr = simclr.half()
+        else:
+            simclr = simclr.to(dtype=torch.bfloat16)
+        simclr.eval()
+
+        with open(config.GMM_MODEL_PATH, 'rb') as f:
+            class_gmms = pickle.load(f)
+        classes = list(class_gmms[0].keys())
+        hmm_thresholds = load_hmm_thresholds(config.HMM_SCORE_PATH)
+
+        # Process files
+        results = []
+        for protein_file in tqdm(input_files, desc="Processing genomes"):
+            # Run HMM scan
+            hmm_out = os.path.join(tmp_dir, f"{os.path.basename(protein_file)}_hmm.out")
+            if not os.path.exists(config.HMM_DB_PATH):
+                raise FileNotFoundError(f"HMM database not found at {config.HMM_DB_PATH}")
+            subprocess.run(['hmmscan', '--noali', '--cpu', config.CPU_CORES, '-E', '1e-3',
+                          '--tblout', hmm_out, config.HMM_DB_PATH, protein_file],
+                          check=True,
+                          stderr=subprocess.PIPE,
+                          stdout=subprocess.PIPE,
+                          text=True)
+
+            # Filter results
+            with open(hmm_out) as f:
+                hits = {p[2] for p in [line.split() for line in f if not line.startswith('#')] 
+                       if len(p) >= 6 and float(p[4]) <= 1e-5 and float(p[5]) >= hmm_thresholds.get(p[0], 0)}
+
+            # Process hits
+            for protein_id in hits:
+                seq = subprocess.run(['seqkit', 'grep', '-p', protein_id, '-w', '0', protein_file],
+                                   capture_output=True, text=True).stdout.split('\n')[-2].replace("*", "")
+                
+                emb = embed_sequence(client, seq)
+                if config.DEVICE == 'cpu':
+                    emb = emb.to(torch.float16)
+                else:
+                    emb = emb.to(dtype=torch.bfloat16)
+                
+                with torch.no_grad():
+                    simclr_rep = simclr(emb).to(torch.float16).cpu().numpy()
+                
+                probs = predict_class(classes, simclr_rep, class_gmms).T
+                for pred in probs.tolist():
+                    max_idx = pred.index(max(pred))
+                    results.append([
+                        protein_id,
+                        classes[max_idx],
+                        round(pred[max_idx], 2),
+                        [[classes[i], round(s, 2)] for i, s in enumerate(pred) if s >= config.PVAL_THRESHOLD]
+                    ])
+
+        # Save results
+        pd.DataFrame(results, columns=['Gene', 'Subtype', 'Probability', 
+                                     'Potential_candidates[Subtype, Probability]']
+                   ).to_csv(config.OUTPUT_FILENAME, sep='\t', index=False)
+        
+        print("Analysis completed successfully!")
+
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

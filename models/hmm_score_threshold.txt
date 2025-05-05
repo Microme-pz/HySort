@@ -1,0 +1,9 @@
+groups	self_match_min_score	threshold_75
+fefe_group_a_hydb	314.4	235.8
+fefe_group_b_hydb	250.6	187.95
+fefe_group_c_hydb	275.1	206.325
+nife_group_1	283.8	212.85
+nife_group_2	352.7	264.525
+nife_group_3	270	202.5
+nife_group_4	425.5	319.125
+fe_only_group	573.2	429.9
