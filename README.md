@@ -8,8 +8,11 @@ HySort is a computational tool for identifying potential hydrogenases in genomic
 ## Prerequisites
 1. Python 3.8+
 2. System-wide accessible dependencies:
+
 	`hmmscan`
+	
 	`seqkit`
+
 Add the tools to your system path (replace /path/to/software with their install directories):
 ```
 export PATH="$PATH:/path/to/software"
