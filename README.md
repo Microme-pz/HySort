@@ -23,6 +23,7 @@ export PATH="$PATH:/path/to/software"
 ```
 git clone https://github.com/Microme-pz/HySort.git
 cd HySort
+git lfs pull # pull gmms manually 
 ```
 2. Create and activate a Python environment (recommended):
 ```
