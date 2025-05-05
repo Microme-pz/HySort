@@ -2,7 +2,7 @@
 
 HySort is a computational tool for identifying potential hydrogenases in genomic data and classifying their subtypes. It combines: Hidden Markov Model (HMM) search for hydrogenase candidates and Gaussian Mixture Models (GMMs) with updated protein embeddings from contrastive learning of embeddings from the protein language model ESM-C for subtype classification. 
 
-<img src="images/HySort.jpeg" alt="Workflow" width="200" height="200"/>
+<img src="images/HySort.jpeg" alt="Workflow" width="800" height="200"/>
 
 # Installation
 ## Prerequisites
