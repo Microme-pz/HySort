@@ -1,4 +1,4 @@
-# <img src="images/Icon.pdf" alt="Icon" width="20" height="20" /> HySort: Hydrogenase subtype classifier
+# <img src="images/icon.jpg" alt="Icon" width="20" height="20" /> HySort: Hydrogenase subtype classifier
 
 HySort is used to identify the potential hydrogenases in a genome followed by subtype classification. It's built upon hidden markov model search for potential hydrogenases and probability calculation based on Gaussian mixture models with the new embeddings from constrative learning of the protein language model ESM-C.
 
