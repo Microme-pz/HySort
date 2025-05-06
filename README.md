@@ -42,7 +42,7 @@ pip install -r requirements.txt
 # Usage
 When you first run the software, it will download the ESM-C 300M model from Hugging Face. This download occurs only once—future runs will use the locally cached model and will not require re-downloading.
 
-## Basic Commands:
+## Basic Commands
 ```
 # Show help menu
 ./hysort -h
